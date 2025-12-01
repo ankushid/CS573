@@ -33,10 +33,16 @@ def store_embeddings(store: VectorStore, docs: List[Document], embeddings: np.nd
         sub_docs = [docs[i] for i in indices]
         doc_ids = [d.doc_id for d in sub_docs]
         contents = [d.text for d in sub_docs]
+        periods = [d.period for d in sub_docs]  # assuming Document has 'period' attribute
+        
         sub_embeddings = embeddings[indices, :]
         store.insert_documents(
             ticker=ticker,
             doc_ids=doc_ids,
             contents=contents,
+            period=periods,
             embeddings=sub_embeddings,
         )
+    
+    # #remove all duplicate doc_ids
+    # store.remove_duplicate_doc_ids()

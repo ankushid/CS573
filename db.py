@@ -41,6 +41,7 @@ class VectorStore:
                 ticker    TEXT NOT NULL,
                 doc_id    TEXT NOT NULL,
                 content   TEXT NOT NULL,
+                period    TEXT,
                 embedding VECTOR({self.embed_dim}) NOT NULL
             );
             """
@@ -60,6 +61,7 @@ class VectorStore:
         ticker: str,
         doc_ids: Iterable[str],
         contents: Iterable[str],
+        period: Iterable[str],
         embeddings: np.ndarray,
     ) -> None:
         """
@@ -74,12 +76,12 @@ class VectorStore:
             )
 
         with self._conn, self._conn.cursor() as cur:
-            for doc_id, text, emb in zip(doc_ids, contents, embeddings):
+            for doc_id, text, period, emb in zip(doc_ids, contents, period, embeddings):
                 # emb is a 1D numpy array; pgvector adapter accepts list-like
                 cur.execute(
                     """
-                    INSERT INTO document_embeddings (ticker, doc_id, content, embedding)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO document_embeddings (ticker, doc_id, content, period, embedding)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (ticker, doc_id, text, emb.tolist()),
+                    (ticker, doc_id, text, period, emb.tolist()),
                 )

@@ -3,12 +3,14 @@ from pathlib import Path
 from typing import Iterator, List
 
 from pypdf import PdfReader
+import re
 
 @dataclass
 class Document:
     ticker: str
     doc_id: str      # e.g. filename
     text: str        # full extracted text
+    period: str = ""  # optional period attribute
 
 
 def extract_text_from_pdf(path: Path) -> str:
@@ -43,4 +45,6 @@ def iter_documents(root_dir: Path) -> Iterator[Document]:
                 ticker=ticker,
                 doc_id=pdf_path.name,
                 text=text,
+                #Period is first instance of Q# #### in text
+                period = re.search(r'(Q[1-4] \d{4})', text).group(0) if re.search(r'(Q[1-4] \d{4})', text) else ""
             )

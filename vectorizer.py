@@ -66,6 +66,7 @@ class FinanceEmbeddingVectorizer(BaseVectorizer):
         self._fitted = True  # pretrained
 
     def fit(self, texts: List[str]) -> None:
+        print("FinanceEmbeddingVectorizer: fit() is a no-op for pretrained models.")
         self._fitted = True  # no-op
 
     def transform(self, texts: List[str]) -> np.ndarray:
@@ -103,6 +104,7 @@ def get_vectorizer(
                 model_name=finance_model, device=device,
                 normalize=normalize, batch_size=batch_size
             )
-        except Exception:
-            return TfidfVectorizerWrapper(max_features=tfidf_dim)
+        except Exception as e:
+            raise e
+            # return TfidfVectorizerWrapper(max_features=tfidf_dim)
     return TfidfVectorizerWrapper(max_features=tfidf_dim)
