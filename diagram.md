@@ -12,3 +12,4 @@ H --> I[Rolling Correlation r(i j t)];
 F --> J[Align (i j t)];
 I --> J;
 J --> K[Compare S vs r];
+```
