@@ -1,5 +1,5 @@
-flowchart LR
 ```mermaid
+flowchart LR
   %% ============= STYLES =============
   classDef step fill:#0ea5e9,stroke:#0369a1,color:#fff,stroke-width:1px;
   classDef data fill:#10b981,stroke:#065f46,color:#fff,stroke-width:1px;
