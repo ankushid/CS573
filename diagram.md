@@ -32,3 +32,18 @@ flowchart LR
   B7  --> C1
   C1 --> C2["Compare Sᵢⱼ,ₜ vs ρᵢⱼ,ₜ (or ρᵢⱼ,ₜ₊₁):<br/>• Regression: z(ρ) ~ S + controls<br/>• Rank/decile checks<br/>• AUC for predicting high future ρ"]:::calc
   C2 --> C3["Report & Visualize:<br/>coeff β, CI, decile curves,<br/>heatmaps (S vs ρ), case timelines"]:::out
+
+```mermaid
+flowchart LR
+  A[PDFs by Ticker] --> B[Extract & Clean Text]
+  B --> C[Embed Text]
+  C --> D[(pgvector DB)]
+  D --> E[Per-Period Firm Vectors]
+  E --> F[Cosine Similarity: S(i,j,t)]
+
+  G[Daily Prices] --> H[Returns]
+  H --> I[Rolling Corr: ρ(i,j,t)]
+
+  F --> J[Align (i,j,t)]
+  I --> J
+  J --> K[Compare S vs ρ\n(assoc/predict)]
