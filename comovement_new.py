@@ -1,39 +1,33 @@
 # comovement.py
 # -----------------------------------------------------------------------------
-# Enrich a period CSV (e.g., '2019Q3' in first/period column) with KO–PEP
-# co-movement numbers. Robust price loader with Yahoo retries + Stooq fallback,
-# optional on-disk caching, rolling correlation, quarterly aggregation, and merge.
-#
-# One-time installs:
-#   pip install yfinance pandas-datareader pandas numpy
+# Enrich a period CSV (e.g., first column like '2019Q3') with KO–PEP co-movement
+# numbers, using LOCAL price files (no web calls). It:
+#   • reads KO.csv and PEP.csv you saved earlier,
+#   • computes daily log returns from Adj Close (falls back to Close),
+#   • builds a rolling correlation series,
+#   • buckets by quarter (YYYYQ#) using the ROLLING WINDOW END DATE,
+#   • aggregates (mean ρ, mean z, tanh(mean z)),
+#   • merges into your input CSV, and writes an output CSV.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
-import time
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
 # ======================== EDIT THESE ONLY =========================
-CSV_IN  = "ko_pep_sim_by_period.csv"              # input with quarter labels like 2019Q3
-CSV_OUT = "ko_pep_sim_by_period_with_corr.csv"    # output file
+CSV_IN   = "ko_pep_sim_by_period.csv"                 # input CSV with 2019Q3-style period labels
+CSV_OUT  = "ko_pep_sim_by_period_with_corr.csv"       # output CSV path
 
-TICKER_A = "KO"
-TICKER_B = "PEP"
+PRICE_DIR = "price_store"                              # folder containing KO.csv, PEP.csv
+FILE_A    = "KO.csv"                                   # first ticker file
+FILE_B    = "PEP.csv"                                  # second ticker file
 
-START_DATE = "2001-01-01"   # wide range to cover your earliest quarter + rolling window warmup
-END_DATE   = "2025-12-31"   # note: yfinance 'end' is exclusive; set a bit past your last quarter
+ROLLING_WINDOW = 120                              # trading days (e.g., 60 ≈ ~3 months)
 
-ROLLING_WINDOW = 60         # trading days (e.g., 60 ≈ ~3 months)
-
-# Optional lightweight cache to reduce rate limits (stores daily Close to CSV)
-USE_CACHE       = True
-PRICE_CACHE_DIR = "price_cache"   # folder will be created if missing
-
-# Yahoo retry policy
-MAX_RETRIES       = 5
-BACKOFF_BASE_SEC  = 1.0
-YF_AUTO_ADJUST    = True
+# Optional date filter for the local price data (leave as "" to use full file)
+FILTER_START_DATE = ""                                  # e.g., "2001-01-01"
+FILTER_END_DATE   = ""                                  # e.g., "2025-11-01" (inclusive)
 # =================================================================
 
 
@@ -46,75 +40,43 @@ def fisher_inv(z: float | np.ndarray) -> float | np.ndarray:
     return np.tanh(z)
 
 
-# -------------------- Robust price loaders ------------------------
-def _fetch_yahoo_close(ticker: str, start: str, end: str) -> pd.Series:
-    import yfinance as yf
-    last_err = None
-    for k in range(MAX_RETRIES):
-        try:
-            df = yf.download(
-                ticker,
-                start=start,
-                end=end,
-                progress=False,
-                auto_adjust=YF_AUTO_ADJUST,
-                threads=False,
-                interval="1d",
-            )
-            if not df.empty:
-                s = df["Close"].astype("float64")
-                s.name = ticker
-                return s
-            last_err = RuntimeError("Empty dataframe from Yahoo.")
-        except Exception as e:
-            last_err = e
-        time.sleep(BACKOFF_BASE_SEC * (2 ** k))
-    raise RuntimeError(f"Yahoo failed after retries. Last error: {last_err}")
+# -------------------- Local price file loaders --------------------
+def load_price_series_from_csv(path: Path) -> pd.Series:
+    """
+    Read a local OHLCV CSV saved by your downloader.
+    Uses 'Adj Close' if present, otherwise 'Close'.
+    Returns a price Series indexed by Date (DatetimeIndex).
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Price file not found: {path.resolve()}")
+    df = pd.read_csv(path, parse_dates=["Date"])
+    if "Adj Close" in df.columns:
+        px = df["Adj Close"].astype("float64")
+    elif "AdjClose" in df.columns:
+        px = df["AdjClose"].astype("float64")
+    elif "Close" in df.columns:
+        px = df["Close"].astype("float64")
+    else:
+        raise ValueError(f"{path.name}: expected 'Adj Close' or 'Close' column.")
+    px.index = pd.to_datetime(df["Date"])
+    px = px.sort_index()
+    # Optional date filter
+    if FILTER_START_DATE:
+        px = px[px.index >= pd.to_datetime(FILTER_START_DATE)]
+    if FILTER_END_DATE:
+        px = px[px.index <= pd.to_datetime(FILTER_END_DATE)]
+    if px.empty:
+        raise ValueError(f"{path.name}: no prices after date filtering.")
+    return px
 
-def _fetch_stooq_close(ticker: str, start: str, end: str) -> pd.Series:
-    # Stooq uses '.US' suffix for US tickers
-    from pandas_datareader import data as pdr
-    sym = f"{ticker}.US"
-    df = pdr.DataReader(sym, "stooq", start=start, end=end)
-    df = df.sort_index()
-    if df.empty:
-        raise RuntimeError("Empty dataframe from Stooq.")
-    s = df["Close"].astype("float64")
-    s.name = ticker
-    return s
-
-def _load_close_with_cache(ticker: str, start: str, end: str) -> pd.Series:
-    cache_dir = Path(PRICE_CACHE_DIR)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = cache_dir / f"{ticker}_{start}_{end}.csv"
-
-    if USE_CACHE and cache_file.exists():
-        s = pd.read_csv(cache_file, parse_dates=["date"])
-        s = s.set_index("date")["Close"].astype("float64")
-        s.name = ticker
-        return s
-
-    # Try Yahoo; fallback to Stooq
-    try:
-        s = _fetch_yahoo_close(ticker, start, end)
-    except Exception:
-        s = _fetch_stooq_close(ticker, start, end)
-
-    if USE_CACHE:
-        pd.DataFrame({"date": s.index, "Close": s.values}).to_csv(cache_file, index=False)
-    return s
-
-def load_log_returns(ticker: str, start: str, end: str) -> pd.Series:
-    px = _load_close_with_cache(ticker, start, end)
+def to_log_returns(px: pd.Series) -> pd.Series:
     r = np.log(px).diff()
-    r.name = ticker
     return r
 
 
 # ------------------- Rolling corr & aggregation -------------------
 def compute_rolling_corr(ret_a: pd.Series, ret_b: pd.Series, window: int) -> pd.Series:
-    df = pd.concat([ret_a, ret_b], axis=1).dropna()
-    df.columns = ["a", "b"]
+    df = pd.concat([ret_a.rename("a"), ret_b.rename("b")], axis=1).dropna()
     if df.shape[0] < window:
         raise ValueError(
             f"Not enough overlapping data for a {window}-day window (overlap rows={df.shape[0]})."
@@ -144,9 +106,12 @@ def main():
     period_col = detect_period_column(base)
     base[period_col] = base[period_col].astype(str)
 
-    # 2) Load returns once (robust)
-    ret_a = load_log_returns(TICKER_A, START_DATE, END_DATE)
-    ret_b = load_log_returns(TICKER_B, START_DATE, END_DATE)
+    # 2) Load local price files and compute daily log returns
+    pdir = Path(PRICE_DIR)
+    px_a = load_price_series_from_csv(pdir / FILE_A)
+    px_b = load_price_series_from_csv(pdir / FILE_B)
+    ret_a = to_log_returns(px_a)
+    ret_b = to_log_returns(px_b)
 
     # 3) Rolling correlation over full span
     rho_series = compute_rolling_corr(ret_a, ret_b, ROLLING_WINDOW)
@@ -166,7 +131,7 @@ def main():
 
     # 5) Merge back into your CSV
     out = base.merge(grouped, left_on=period_col, right_on="quarter", how="left")
-    out["co_mov_tickers"] = f"{TICKER_A}-{TICKER_B}"
+    out["co_mov_tickers"] = f"{Path(FILE_A).stem}-{Path(FILE_B).stem}"
     out["rolling_window_days"] = ROLLING_WINDOW
 
     # 6) Save
@@ -178,9 +143,11 @@ def main():
     eff_end   = rho_series.index.max().date() if not rho_series.empty else None
 
     print("=" * 78)
-    print(f"Co-movement (rolling Pearson corr of daily log returns)")
-    print(f"Tickers              : {TICKER_A} vs {TICKER_B}")
-    print(f"Price range fetched  : {START_DATE} → {END_DATE}")
+    print("Co-movement (rolling Pearson corr of daily log returns) — LOCAL price files")
+    print(f"Prices A file        : {pdir / FILE_A}")
+    print(f"Prices B file        : {pdir / FILE_B}")
+    if FILTER_START_DATE or FILTER_END_DATE:
+        print(f"Date filter applied  : {FILTER_START_DATE or 'min'} → {FILTER_END_DATE or 'max'}")
     if eff_start and eff_end:
         print(f"Window end dates     : {eff_start} → {eff_end}")
     print(f"Rolling window       : {ROLLING_WINDOW} trading days")
@@ -191,9 +158,8 @@ def main():
         print("Sample aggregated quarters:")
         print(grouped.head(5).to_string(index=False))
     else:
-        print("No aggregated quarters produced. Check date range and rolling window.")
+        print("No aggregated quarters produced. Check price files and rolling window.")
     print("=" * 78)
-
 
 if __name__ == "__main__":
     main()
